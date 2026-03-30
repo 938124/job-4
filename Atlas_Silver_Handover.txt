@@ -1,0 +1,251 @@
+ATLAS PIPELINE - DEPLOYMENT GUIDE
+
+For: Deekshitha
+Date: March 2026
+
+
+WHAT THIS PIPELINE DOES
+
+This pipeline takes financial data from Excel files stored in S3 and moves it through three layers in Databricks:
+
+  Bronze  -  Raw data exactly as it comes from the Excel files. Nothing is changed.
+  Stage   -  Views that sit on top of bronze. They filter out deleted rows and rename columns to a clean format. No job needed to maintain them - they are always live.
+  Silver  -  The final clean layer. Columns are cast to the right data types (dates, numbers). This is what analysts query.
+
+Flow:
+
+  Excel files in S3
+        >> Job_IGTEXCEL_BRONZE
+  Bronze tables  (021_bronze_finance.atlas)
+        >> Stage views  (run once, always live)
+  Stage views  (022_silver_finance.atlas_stage)
+        >> Job_ATLAS_SILVER
+  Silver tables  (022_silver_finance.atlas_map)
+
+
+FILES IN THIS FOLDER
+
+  Job_IGTEXCEL_BRONZE.ipynb
+    Reads each Excel file from S3, loads every configured sheet into a bronze Delta table.
+
+  Job_ATLAS_SILVER.ipynb
+    Reads the 17 stage views, casts columns to correct types, adds audit columns, writes to silver tables.
+
+  Setup_Atlas_Jobs.ipynb
+    Run once. Calls the Databricks API to create Job_IGTEXCEL_BRONZE and Job_ATLAS_SILVER as Workflow jobs.
+
+  Atlas_Pipeline_Setup.py
+    Run once. Inserts 14 pipeline config rows into the database so the bronze job knows which Excel files to load.
+
+  Atlas_Bronze_New_Pipelines_Mar2026.sql
+    Run once. Inserts the Install Base pipeline config for GameOpsInstallBasePSD and GameOpsInstallBaseActivity.
+
+  Atlas_Stage_Views.sql
+    Run once. Creates 17 views in development_022_silver_finance.atlas_stage, one per bronze table.
+
+
+IMPORTANT - BEFORE YOU START
+
+The two job notebooks (Job_IGTEXCEL_BRONZE and Job_ATLAS_SILVER) both start with a line that says:
+
+  %run ../initializeJobVariables
+
+This means they depend on a utility notebook called initializeJobVariables that must already exist in the Databricks workspace. The two dots (..) mean it looks one folder up from wherever you import the notebooks.
+
+What you need to do:
+
+  1. In Databricks Workspace, find the notebook called initializeJobVariables
+  2. Note which folder it is in - for example /Shared/
+  3. Create your Atlas folder inside that same folder - for example /Shared/Atlas/
+  4. Import all 3 job notebooks into /Shared/Atlas/
+
+This way, when Job_IGTEXCEL_BRONZE runs that line, it finds initializeJobVariables one level up at /Shared/initializeJobVariables.
+
+
+SETUP STEP 1 - IMPORT THE 3 NOTEBOOKS
+
+Do this once only.
+
+Why: The jobs run as Databricks Workflow jobs, which means the notebooks must live inside the Workspace.
+
+  1. In Databricks, click Workspace in the left sidebar
+  2. Navigate to the folder where initializeJobVariables lives
+  3. Click the three dots (...) next to that folder, then Create, then Folder
+  4. Name the folder Atlas and click Create
+  5. Click the three dots (...) next to your new Atlas folder, then click Import
+  6. Select File at the top of the dialog
+  7. Click the upload box, find Job_IGTEXCEL_BRONZE.ipynb on your computer, select it, click Import
+  8. Repeat steps 5 to 7 for Job_ATLAS_SILVER.ipynb
+  9. Repeat steps 5 to 7 for Setup_Atlas_Jobs.ipynb
+
+All 3 notebooks should now be visible inside your Atlas folder.
+
+
+SETUP STEP 2 - REGISTER THE PIPELINE CONFIG
+
+Do this once only.
+
+Why: The bronze job reads a config table in the database to know which Excel files to pick up, which sheets to read, and which bronze table to write each sheet to. These two scripts populate that config.
+
+Part A - Atlas_Bronze_New_Pipelines_Mar2026.sql
+
+This registers the Install Base pipeline, which loads GameOpsInstallBasePSD and GameOpsInstallBaseActivity from an Excel file.
+
+  1. Click SQL Editor in the left sidebar
+  2. Click the plus button (+) to open a new blank query
+  3. Open Atlas_Bronze_New_Pipelines_Mar2026.sql on your computer in Notepad
+  4. Select all the text, copy it, paste it into the SQL Editor
+  5. Click the blue Run button at the top right
+  6. You should see a green success message at the bottom
+
+Part B - Atlas_Pipeline_Setup.py
+
+This registers the remaining 14 pipelines covering all the other Excel files.
+
+  1. Go to Workspace and open your Atlas folder
+  2. Click the three dots (...), then Create, then Notebook
+  3. Name it Pipeline_Setup, set the language to Python, click Create
+  4. Open Atlas_Pipeline_Setup.py on your computer in Notepad
+  5. Select all the text, copy it, paste it into the first cell of the new notebook
+  6. At the top of the notebook, click the Detached dropdown, select your cluster, wait for the circle to turn green
+  7. Click Run all (the double arrow button at the top)
+  8. You should see output listing pipeline names with IDs - that means it worked
+
+If you see a duplicate key error, that is fine. It just means this was already run before and the config already exists. You can ignore it.
+
+
+SETUP STEP 3 - CREATE THE 2 WORKFLOW JOBS
+
+Do this once only.
+
+Why: The notebooks cannot be triggered on a schedule or run reliably unless they are set up as Workflow jobs. This step does that automatically using the Databricks API.
+
+  1. Go to Workspace, open your Atlas folder, click on Setup_Atlas_Jobs to open it
+  2. The notebook has 3 cells. In the second cell (the first code cell), find this line:
+       NOTEBOOK_BASE_PATH = "/Shared/Excel_Poc"
+  3. Change /Shared/Excel_Poc to the full path of your Atlas folder. For example:
+       NOTEBOOK_BASE_PATH = "/Shared/Atlas"
+     If your Atlas folder is nested deeper, use the full path, for example /Shared/Finance/Atlas
+  4. Click the Detached dropdown, select your cluster, wait for the circle to turn green
+  5. Click Run all (the double arrow button at the top)
+  6. You should see output like this:
+
+       Workspace : your-workspace.azuredatabricks.net
+       Cluster   : xxxx-xxxxxx-xxxxxxxx
+
+       Created : Job_IGTEXCEL_BRONZE
+       URL     : https://.../#job/101
+
+       Created : Job_ATLAS_SILVER
+       URL     : https://.../#job/102
+
+       2/2 jobs created successfully.
+
+  7. Click Workflows in the left sidebar - you should see both jobs listed there
+
+
+SETUP STEP 4 - CREATE THE 17 STAGE VIEWS
+
+Do this once only.
+
+Why: The stage views sit between the bronze tables and the silver tables. They filter out deleted rows and rename columns to clean names. Job_ATLAS_SILVER reads from these views. Without them, the silver job falls back to reading directly from bronze, which is slower and includes deleted rows.
+
+  1. Click SQL Editor in the left sidebar
+  2. Click the plus button (+) to open a new blank query
+  3. Open Atlas_Stage_Views.sql on your computer in Notepad
+  4. Select all the text, copy it, paste it into the SQL Editor
+  5. Click the blue Run button
+  6. This creates 17 views so it takes a moment - wait for the success message
+
+Verify the views were created. Open a new query in SQL Editor and run this:
+
+  SHOW VIEWS IN development_022_silver_finance.atlas_stage
+
+You should see 17 view names listed.
+
+
+EVERY TIME NEW DATA ARRIVES
+
+Setup is done. This is all you do from now on each time new Excel files are uploaded to S3.
+
+Step 1 - Run Job_IGTEXCEL_BRONZE
+
+This reads all configured Excel files from S3 and loads them into the bronze tables.
+
+  1. Click Workflows in the left sidebar
+  2. Find Job_IGTEXCEL_BRONZE and click on it
+  3. Click Run now at the top right
+  4. A new row appears under Runs - wait for a green tick
+  5. If you see a red X, click the run, click the task name, and read the error on the right side of the screen
+
+Step 2 - Run Job_ATLAS_SILVER
+
+This reads the 17 stage views, casts all columns to the correct types, adds 4 audit columns, then truncates and reloads each silver table.
+
+  1. Click Workflows in the left sidebar
+  2. Find Job_ATLAS_SILVER and click on it
+  3. Click Run now
+  4. Wait for a green tick
+
+
+VERIFY EVERYTHING LOADED
+
+After both jobs finish, open SQL Editor and run this query:
+
+  SELECT 'BPC_Plug_Financials' AS table_name, COUNT(*) AS rows FROM development_022_silver_finance.atlas_map.BPC_Plug_Financials UNION ALL
+  SELECT 'BPC_Plug_Financials_MachineCosts', COUNT(*) FROM development_022_silver_finance.atlas_map.BPC_Plug_Financials_MachineCosts UNION ALL
+  SELECT 'BW_COPA_DailyFeePoker_Units', COUNT(*) FROM development_022_silver_finance.atlas_map.BW_COPA_DailyFeePoker_Units UNION ALL
+  SELECT 'BW_ZRBINQ_BillingPlans', COUNT(*) FROM development_022_silver_finance.atlas_map.BW_ZRBINQ_BillingPlans UNION ALL
+  SELECT 'GameOpsInstallBaseActivity', COUNT(*) FROM development_022_silver_finance.atlas_map.GameOpsInstallBaseActivity UNION ALL
+  SELECT 'GameOpsInstallBasePSD', COUNT(*) FROM development_022_silver_finance.atlas_map.GameOpsInstallBasePSD UNION ALL
+  SELECT 'RPM_Exp_Depreciation', COUNT(*) FROM development_022_silver_finance.atlas_map.RPM_Exp_Depreciation UNION ALL
+  SELECT 'RPM_Intl_Performance_EMEA_Africa', COUNT(*) FROM development_022_silver_finance.atlas_map.RPM_Intl_Performance_EMEA_Africa UNION ALL
+  SELECT 'RPM_Intl_Performance_EMEA_FixedFee', COUNT(*) FROM development_022_silver_finance.atlas_map.RPM_Intl_Performance_EMEA_FixedFee UNION ALL
+  SELECT 'RPM_Intl_Performance_EMEA_GreeceWLA', COUNT(*) FROM development_022_silver_finance.atlas_map.RPM_Intl_Performance_EMEA_GreeceWLA UNION ALL
+  SELECT 'RPM_Intl_Performance_LAC', COUNT(*) FROM development_022_silver_finance.atlas_map.RPM_Intl_Performance_LAC UNION ALL
+  SELECT 'RPM_Peformance_PremLotto_DE', COUNT(*) FROM development_022_silver_finance.atlas_map.RPM_Peformance_PremLotto_DE UNION ALL
+  SELECT 'RPM_Peformance_PremLotto_NY', COUNT(*) FROM development_022_silver_finance.atlas_map.RPM_Peformance_PremLotto_NY UNION ALL
+  SELECT 'RPM_Peformance_PremLotto_RI', COUNT(*) FROM development_022_silver_finance.atlas_map.RPM_Peformance_PremLotto_RI UNION ALL
+  SELECT 'RPM_Performance_CDS_Class_II', COUNT(*) FROM development_022_silver_finance.atlas_map.RPM_Performance_CDS_Class_II UNION ALL
+  SELECT 'RPM_Performance_CDS_Class_II_ManualBilling', COUNT(*) FROM development_022_silver_finance.atlas_map.RPM_Performance_CDS_Class_II_ManualBilling UNION ALL
+  SELECT 'RPM_Performance_WAP_NewCanada', COUNT(*) FROM development_022_silver_finance.atlas_map.RPM_Performance_WAP_NewCanada
+  ORDER BY table_name
+
+15 of the 17 tables should show a row count greater than 0.
+
+NOTE: RPM_Performance_CDS_Class_II and RPM_Performance_WAP_NewCanada will show 0 rows. The Excel files for these two have not been configured yet. This is expected. Contact Ashish to get those two pipelines added.
+
+
+IF SOMETHING GOES WRONG
+
+  Error: initializeJobVariables not found
+  Meaning: Your Atlas folder is in the wrong place.
+  Fix: Move the 3 notebooks so they are exactly one level below where initializeJobVariables lives.
+
+  Error: catalog does not exist
+  Meaning: The catalog development_022_silver_finance has not been created in Unity Catalog.
+  Fix: Contact your Databricks admin. The catalog needs to exist before the notebooks can write to it.
+
+  Error: duplicate key error in Pipeline_Setup
+  Meaning: The pipeline config was already inserted before.
+  Fix: Ignore it. Everything is fine.
+
+  Error: red X on a job run
+  Meaning: Something failed during the run.
+  Fix: Click the run, click the task name, read the error on the right side of the screen.
+
+  Problem: A silver table shows 0 rows
+  Meaning: The stage view may be missing.
+  Fix: Run  SHOW VIEWS IN development_022_silver_finance.atlas_stage  in SQL Editor. If that view is not listed, re-run Atlas_Stage_Views.sql.
+
+
+QUICK REFERENCE
+
+  Setup 1   Import 3 notebooks into Atlas folder                           Do once
+  Setup 2A  Run Atlas_Bronze_New_Pipelines_Mar2026.sql in SQL Editor       Do once
+  Setup 2B  Paste Atlas_Pipeline_Setup.py into a notebook and run it       Do once
+  Setup 3   Open Setup_Atlas_Jobs, update the path, run it                 Do once
+  Setup 4   Paste Atlas_Stage_Views.sql in SQL Editor and run it           Do once
+
+  Every time new data arrives:
+    Run Job_IGTEXCEL_BRONZE first, then run Job_ATLAS_SILVER
